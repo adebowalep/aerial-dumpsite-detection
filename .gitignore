@@ -28,5 +28,10 @@ processed/
 *.onnx
 *.zip
 
+## Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
 ## Misc
 *.log

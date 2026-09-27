@@ -3,7 +3,7 @@
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![PyTorch](https://img.shields.io/badge/pytorch-2.x-orange)
 ![torchvision](https://img.shields.io/badge/torchvision-detection-red)
-![Tests](https://img.shields.io/badge/tests-planned-lightgrey)
+![Tests](https://img.shields.io/badge/tests-pytest-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
 > A Faster R-CNN pipeline for detecting and localizing illegal waste dumpsites in aerial/satellite imagery, built on top of two public remote-sensing datasets.
@@ -85,6 +85,12 @@ waste-project/
 │   ├── model.py           # Model factories (Faster R-CNN variants) + train/validate batch fns
 │   ├── metric.py           # IoU, precision/recall, AP, mAP implementations
 │   └── visualize.py       # Bounding-box drawing, class-distribution plots, output decoding
+├── tests/                 # pytest suite (CPU-only, no pretrained weights needed)
+│   ├── conftest.py
+│   ├── test_data.py
+│   ├── test_metric.py
+│   └── test_model.py
+├── .github/workflows/tests.yml   # Runs pytest on every push/PR
 ├── data/                  # Raw source datasets (gitignored — see Setup)
 ├── processed/             # Preprocessed train/test images + annotations (gitignored)
 │   ├── images/
@@ -93,6 +99,8 @@ waste-project/
 ├── waste_project.ipynb    # Main training, evaluation, and inference notebook
 ├── generate_data.ipynb    # Dataset preprocessing / generation notebook
 ├── requirements.txt
+├── requirements-dev.txt   # requirements.txt + pytest/pytest-cov
+├── pytest.ini
 ├── LICENSE
 ├── .gitignore
 └── README.md
@@ -158,7 +166,14 @@ Run the cells in order: dataset loading → class-distribution check → model i
 
 ## How to Test
 
-There is no automated test suite yet — this is the first item on the [roadmap](#roadmap). In the meantime, correctness is checked manually via the notebook's visualization cells (drawn boxes vs. ground truth) and printed loss curves.
+```bash
+pip install -r requirements-dev.txt
+pytest -v
+```
+
+The suite (`tests/`) covers `src/metric.py` (IoU, precision/recall, AP — including a regression test for the false-negative bug described below), `src/data.py` (positive/negative sample loading, the zero-box true-negative fix, missing-annotation handling, collation), and the orchestration logic in `src/model.py` (`train_batch`/`validate_batch`, the model registry) using fake models/optimizers so it runs in seconds on CPU with no GPU or downloaded weights required. It runs automatically on every push via GitHub Actions (`.github/workflows/tests.yml`).
+
+The model *factories* themselves (`get_model`, `get_resnet50`, …) aren't unit-tested since they require downloading pretrained ImageNet/COCO weights — verify those by actually training on the GPU workspace.
 
 ---
 
@@ -190,8 +205,8 @@ Both backup folders are gitignored (they live under `processed/`) — delete the
 
 ## Roadmap
 
-- [ ] Re-run training end-to-end against the corrected data and report actual precision/recall/AP@0.5 numbers on held-out data.
-- [ ] Add `pytest` unit tests for `src/metric.py`, `src/data.py`, and model output shapes.
+- [x] Add `pytest` unit tests for `src/metric.py`, `src/data.py`, and the `src/model.py` orchestration logic.
+- [ ] Re-run training end-to-end (on a GPU workspace) against the corrected data and report actual precision/recall/AP@0.5 numbers on held-out data.
 - [ ] Add a CLI training/inference entry point and a config file (hyperparameters currently hardcoded in the notebook).
 - [ ] Benchmark Faster R-CNN against modern detectors (RetinaNet, YOLOv8/v11, RT-DETR) on the same split — accuracy, latency, and parameter count.
 - [ ] Add bbox-aware data augmentation (flips, color jitter, scale) via Albumentations.
