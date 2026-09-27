@@ -137,7 +137,8 @@ source .venv/bin/activate      # Windows: .venv\Scripts\activate
 # 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Obtain the source datasets and populate data/ and processed/
+# 4. Obtain the source datasets and place them as data1/VOC2012 and data1/Aerial
+#    (the paths generate_data.ipynb expects) — see "Data Provenance & Fixes" below:
 #    - Global Dumpsite Test Data: https://www.scidb.cn/en/s/6bq2M3
 #    - AerialWaste: https://aerialwaste.org/
 #    Then run generate_data.ipynb to produce processed/{images,annotations}.
@@ -165,14 +166,31 @@ There is no automated test suite yet — this is the first item on the [roadmap]
 
 - ✅ End-to-end training pipeline runs: data loading → Faster R-CNN fine-tuning → checkpointing.
 - ✅ Training/validation loss curves are logged and plotted per epoch.
-- ⚠️ Quantitative evaluation (precision/recall/mAP on the held-out test set) is implemented in `src/metric.py` but not yet finalized end-to-end in the notebook — this is the top-priority next step.
+- ✅ Test-set evaluation loop (precision/recall/AP@0.5, `src/metric.py`) is now wired up end-to-end in the notebook (see [Data Provenance & Fixes](#data-provenance--fixes) — it was previously blocked by a data bug, not a code bug).
 - ⚠️ Only the ResNet50-FPN backbone has actually been trained; the MobileNetV3 and FPN-v2 variants are scaffolded but unevaluated.
+- ⚠️ No numbers have been reported yet from an actual training run against the corrected data — that's the immediate next step.
+
+---
+
+## Data Provenance & Fixes
+
+`generate_data.ipynb` builds `processed/` from two raw sources that are **not included in this repo** (third-party data, gitignored — see [Setup](#setup)):
+
+- **Dumpsites (positive class):** a VOC2012-style annotated dataset (`data1/VOC2012`, XML annotations) — this is the "dumpsite" class in the [Global Dumpsite Test Data](https://www.scidb.cn/en/s/6bq2M3).
+- **Non-dumpsites (negative class):** [AerialWaste](https://aerialwaste.org/) images (`data1/Aerial`) filtered by `is_candidate_location == 0`, plus a separate held-out `testing_2.json` split used to build `processed/test/`.
+
+Auditing the generation notebook against the actual files in `processed/` turned up two real data bugs, now fixed:
+
+1. **Negative images were mislabeled as an explicit "class 0" box, not zero boxes.** `save_images_as_yolo_no_dumpsite` wrote every `no_dumpsite` annotation as a fake full-image box (`0 0 0 1024 1024`). torchvision's Faster R-CNN reserves class `0` for *implicit* background — giving it an explicit labeled box is non-standard and biases training. **Fixed**: negative annotation files are now empty (zero ground-truth boxes), `DumpsiteDataset` (`src/data.py`) was updated to keep zero-box images as true negatives instead of silently dropping them, and the 3,395 existing `no_dumpsite_*.txt` files in `processed/annotations/` were rewritten to match (original files preserved in `processed/annotations_original_backup/`).
+2. **Test-set boxes were corrupted by a COCO bbox-format mismatch.** `save_testing_data` did `xmin, ymin, xmax, ymax = bbox`, but COCO's `bbox` field is `[x, y, width, height]`, not corner coordinates — every one of the 20 `processed/test/annotations/*.txt` files had `x_max < x_min` and `y_max < y_min`, so IoU against ground truth was always `0`. This is almost certainly why the notebook's evaluation cell was abandoned mid-way in the original version. **Fixed**: the generator now does `xmax, ymax = x + w, y + h`; the existing test annotations were repaired in place using the same arithmetic (the underlying width/height values were still intact, just mislabeled — original files preserved in `processed/test_original_backup/`).
+
+Both backup folders are gitignored (they live under `processed/`) — delete them once you've spot-checked the fix, or keep them for reference.
 
 ---
 
 ## Roadmap
 
-- [ ] Fix and finalize the test-set evaluation loop; report precision/recall/mAP@0.5 on held-out data.
+- [ ] Re-run training end-to-end against the corrected data and report actual precision/recall/AP@0.5 numbers on held-out data.
 - [ ] Add `pytest` unit tests for `src/metric.py`, `src/data.py`, and model output shapes.
 - [ ] Add a CLI training/inference entry point and a config file (hyperparameters currently hardcoded in the notebook).
 - [ ] Benchmark Faster R-CNN against modern detectors (RetinaNet, YOLOv8/v11, RT-DETR) on the same split — accuracy, latency, and parameter count.

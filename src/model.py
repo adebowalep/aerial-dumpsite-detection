@@ -1,92 +1,105 @@
+"""Faster R-CNN model factories and per-batch train/validate steps.
+
+Several backbone variants are provided so accuracy/latency can be compared
+across them (see the project README roadmap) — they all share the same
+two-class (background, dumpsite) head.
+"""
+
+import warnings
+from typing import Dict, List, Tuple
+
 import torch
 import torchvision
-from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
-import numpy as np
-from torchvision import transforms
-import warnings
-
-
 from torchvision.models.detection import FasterRCNN
-from torchvision.models.detection.rpn import AnchorGenerator
 from torchvision.models.detection.backbone_utils import resnet_fpn_backbone
+from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 
-# Disable the specific UserWarning
+# torchvision emits a benign UserWarning about internal API usage on some versions.
 warnings.filterwarnings("ignore", category=UserWarning, module="torchvision.models._utils")
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
+DEFAULT_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+NUM_CLASSES = 2  # 0 = background (implicit), 1 = dumpsite
 
-def get_model():
-    num_classes = 2
-    backbone = resnet_fpn_backbone('resnet50', pretrained=True)
-    # Create custom Faster R-CNN model
-    model = FasterRCNN(backbone, num_classes=num_classes)
+
+def _with_two_class_head(model: FasterRCNN) -> FasterRCNN:
+    """Swap in a fresh box predictor sized for (background, dumpsite)."""
+    in_features = model.roi_heads.box_predictor.cls_score.in_features
+    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, NUM_CLASSES)
     return model
-    
 
-def get_resnet50():
-    num_classes = 2
+
+def get_model() -> FasterRCNN:
+    """Faster R-CNN with a pretrained ResNet50-FPN backbone, built from scratch."""
+    backbone = resnet_fpn_backbone("resnet50", pretrained=True)
+    return FasterRCNN(backbone, num_classes=NUM_CLASSES)
+
+
+def get_resnet50() -> FasterRCNN:
+    """Faster R-CNN starting from the full COCO-pretrained resnet50_fpn model."""
     model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=True)
-    in_features = model.roi_heads.box_predictor.cls_score.in_features
-    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
-    return model
-    
+    return _with_two_class_head(model)
 
-def get_resnet50_fpn_v2():
-    num_classes = 2
-   
+
+def get_resnet50_fpn_v2() -> FasterRCNN:
+    """Faster R-CNN starting from the improved resnet50_fpn_v2 recipe."""
     model = torchvision.models.detection.fasterrcnn_resnet50_fpn_v2(pretrained=True)
-    in_features = model.roi_heads.box_predictor.cls_score.in_features
-    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
-    return model
+    return _with_two_class_head(model)
 
-def get_mobilenet_v3():
-    num_classes = 2
+
+def get_mobilenet_v3() -> FasterRCNN:
+    """Lighter-weight Faster R-CNN (MobileNetV3-Large FPN) for edge/latency comparisons."""
     model = torchvision.models.detection.fasterrcnn_mobilenet_v3_large_fpn(pretrained=True)
-    in_features = model.roi_heads.box_predictor.cls_score.in_features
-    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
-    return model
-    
+    return _with_two_class_head(model)
 
 
+MODEL_REGISTRY = {
+    "resnet50_scratch_head": get_model,
+    "resnet50_fpn": get_resnet50,
+    "resnet50_fpn_v2": get_resnet50_fpn_v2,
+    "mobilenet_v3": get_mobilenet_v3,
+}
 
-# Defining training and validation functions for a single batch
-def train_batch(inputs, model, optimizer):
+
+def get_model_by_name(name: str) -> FasterRCNN:
+    """Look up a model factory by name, e.g. for a config-driven training script."""
+    if name not in MODEL_REGISTRY:
+        raise ValueError(f"Unknown model '{name}'. Options: {sorted(MODEL_REGISTRY)}")
+    return MODEL_REGISTRY[name]()
+
+
+Batch = Tuple[List[torch.Tensor], List[Dict[str, torch.Tensor]]]
+
+
+def train_batch(
+    inputs: Batch, model: FasterRCNN, optimizer: torch.optim.Optimizer, device: str = DEFAULT_DEVICE
+):
+    """Run one training step; returns (total_loss, per-component loss dict)."""
     model.train()
-    input, targets = inputs
-    input = list(image.to(device) for image in input)
+    images, targets = inputs
+    images = [image.to(device) for image in images]
     targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+
     optimizer.zero_grad()
-    losses = model(input, targets)
-    loss = sum(loss for loss in losses.values())
+    losses = model(images, targets)
+    loss = sum(losses.values())
     loss.backward()
     optimizer.step()
     return loss, losses
 
-@torch.no_grad() # this will disable gradient computation in the function below
-def validate_batch(inputs, model,optimizer):
+
+@torch.no_grad()
+def validate_batch(inputs: Batch, model: FasterRCNN, device: str = DEFAULT_DEVICE):
+    """Run one validation step (loss only, no gradient update).
+
+    Faster R-CNN only returns a loss dict in ``model.train()`` mode, so this
+    intentionally still calls ``model.train()`` under ``torch.no_grad()`` to
+    get comparable loss numbers without updating any weights.
+    """
     model.train()
-    input, targets = inputs
-    input = list(image.to(device) for image in input)
+    images, targets = inputs
+    images = [image.to(device) for image in images]
     targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
-    optimizer.zero_grad()
-    losses = model(input, targets)
-    loss = sum(loss for loss in losses.values())
+    losses = model(images, targets)
+    loss = sum(losses.values())
     return loss, losses
-
-
-def get_iou(boxA, boxB, epsilon=1e-5):
-    x1 = max(boxA[0], boxB[0])
-    y1 = max(boxA[1], boxB[1])
-    x2 = min(boxA[2], boxB[2])
-    y2 = min(boxA[3], boxB[3])
-    width = (x2 - x1)
-    height = (y2 - y1)
-    if (width<0) or (height <0):
-        return 0.0
-    area_overlap = width * height
-    area_a = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
-    area_b = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
-    area_combined = area_a + area_b - area_overlap
-    iou = area_overlap / (area_combined+epsilon)
-    return iou

@@ -1,108 +1,103 @@
-   
-import os
+"""PyTorch Dataset for the dumpsite/no_dumpsite detection task.
+
+Each image has a matching ``.txt`` annotation file with zero or more lines of
+``<label> <x_min> <y_min> <x_max> <y_max>`` (absolute pixel coordinates in the
+resized image). An empty annotation file is a valid true negative - an image
+with no dumpsite in it - and is kept, not dropped, so the model sees explicit
+negatives during training.
+"""
+
 import glob
-import torch
-from torch.utils.data import Dataset
-from PIL import Image
+import os
+from typing import List, Optional, Tuple
+
 import numpy as np
+import torch
+from PIL import Image
+from torch.utils.data import Dataset
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-def preprocess_image(img):
-    img = torch.tensor(img).permute(2,0,1)
-    return img.to(device).float()
+def preprocess_image(image: np.ndarray) -> torch.Tensor:
+    """Convert an HWC float image in [0, 1] to a CHW float tensor."""
+    return torch.tensor(image).permute(2, 0, 1).float()
+
 
 class DumpsiteDataset(Dataset):
-    def __init__(self, root_dir, transform=None, target_transform=None, common_size=(1024, 1024)):   #(1024, 1024)
+    def __init__(
+        self,
+        root_dir: str,
+        transform=None,
+        target_transform=None,
+        common_size: Tuple[int, int] = (1024, 1024),
+    ):
         """
-        Initialize the DumpsiteDataset.
-
         Args:
-            root_dir (str): Root directory of the dataset.
-            transform (callable, optional): A function/transform to apply to the images.
-            target_transform (callable, optional): A function/transform to apply to the target data.
-            common_size (tuple, optional): Common size for images (width, height).
-
+            root_dir: Directory containing an `images/` and `annotations/` subfolder.
+            transform: Optional transform applied to the image array.
+            target_transform: Optional transform applied to the target dict.
+            common_size: (width, height) every image is resized to.
         """
         self.root_dir = root_dir
         self.transform = transform
         self.target_transform = target_transform
         self.common_size = common_size
+        self.image_files = sorted(glob.glob(os.path.join(root_dir, "images", "*.jpeg")))
 
-        # List all image files in the root directory
-        self.image_files = glob.glob(os.path.join(root_dir, 'images', '*.jpeg'))
-
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.image_files)
 
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
             idx = idx.tolist()
 
-        # Get image and annotation paths
-        img_path, txt_path = self.get_image_and_annotation_paths(idx)
+        img_path, txt_path = self._get_image_and_annotation_paths(idx)
         image = Image.open(img_path).convert("RGB")
-        image = np.array(image.resize(self.common_size, resample=Image.BILINEAR))/255.
-        
-        # Load and process annotations
-        boxes, labels = self.load_and_process_annotations(txt_path, image)
-        if len(boxes) == 0:
-            # If there are no valid bounding boxes, you can choose to skip this sample
-            # or return None or a special flag to indicate that it should be excluded.
-            return None
-        
+        image = np.array(image.resize(self.common_size, resample=Image.BILINEAR)) / 255.0
+
+        boxes, labels = self._load_annotations(txt_path)
+        if self.transform is not None:
+            image = self.transform(image)
+        if self.target_transform is not None:
+            boxes, labels = self.target_transform(boxes, labels)
+
         target = {
-        'boxes': torch.tensor(boxes, dtype=torch.float32),
-        'labels': torch.tensor(labels, dtype=torch.int64)
+            "boxes": torch.tensor(boxes, dtype=torch.float32).reshape(-1, 4),
+            "labels": torch.tensor(labels, dtype=torch.int64),
         }
-        image = preprocess_image(image)
-        
-        return  image , target
+        return preprocess_image(image), target
 
-    def get_image_and_annotation_paths(self, idx):
+    def _get_image_and_annotation_paths(self, idx: int) -> Tuple[str, str]:
         img_path = self.image_files[idx]
-
         img_name = os.path.splitext(os.path.basename(img_path))[0]
-        txt_name = img_name + '.txt'
-        txt_path = os.path.join(self.root_dir, 'annotations', txt_name)
-
+        txt_path = os.path.join(self.root_dir, "annotations", img_name + ".txt")
         return img_path, txt_path
-    
-    def load_and_process_annotations(self, txt_path, image):
-        boxes, labels = [], []
 
-        with open(txt_path, 'r') as f:
-            lines = f.readlines()
-            for line in lines:
+    @staticmethod
+    def _load_annotations(txt_path: str) -> Tuple[List[List[float]], List[float]]:
+        """Parse a ``label x_min y_min x_max y_max`` annotation file.
+
+        An empty (or missing-lines) file yields ``([], [])`` — a true negative
+        with zero ground-truth boxes, which is kept rather than dropped.
+        """
+        boxes: List[List[float]] = []
+        labels: List[float] = []
+
+        if not os.path.exists(txt_path):
+            return boxes, labels
+
+        with open(txt_path, "r") as f:
+            for line in f:
                 parts = line.strip().split()
-                if len(parts) == 5:
-                    label, x_min, y_min, x_max, y_max = map(float, parts)
-                    x_min, y_min, x_max, y_max = self.convert_relative_to_absolute_coords(x_min, y_min, x_max, y_max, image)
+                if len(parts) != 5:
+                    continue
+                label, x_min, y_min, x_max, y_max = map(float, parts)
+                boxes.append([x_min, y_min, x_max, y_max])
+                labels.append(label)
 
-                    boxes.append([x_min, y_min, x_max, y_max])
-                    labels.append(label)
-        
-        return boxes, labels    
+        return boxes, labels
 
-    def convert_relative_to_absolute_coords(self, x_min, y_min, x_max, y_max, image):
-       
-        image_width, image_height = self.common_size
-        
-        #x_min = x_min * image_width
-        #y_min = y_min * image_height
-        #width = x_max * image_width
-        #height = y_max * image_height
-        return  x_min, y_min, x_max, y_max
-        
-    
-    def collate_fn(self, batch):
-        valid_batch = [item for item in batch if item is not None]
-        if not valid_batch:
-            return None  # Return None if there are no valid samples
-
-        # Unzip the batch
-        images, targets = zip(*valid_batch)
+    @staticmethod
+    def collate_fn(batch):
+        """Standard detection collate: keep images/targets as parallel tuples."""
+        images, targets = zip(*batch)
         return images, targets
-        #return tuple(zip(*batch))
-
-    
