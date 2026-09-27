@@ -9,7 +9,7 @@ negatives during training.
 
 import glob
 import os
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -26,20 +26,21 @@ class DumpsiteDataset(Dataset):
     def __init__(
         self,
         root_dir: str,
-        transform=None,
-        target_transform=None,
+        bbox_transform: Optional[Callable] = None,
         common_size: Tuple[int, int] = (1024, 1024),
     ):
         """
         Args:
             root_dir: Directory containing an `images/` and `annotations/` subfolder.
-            transform: Optional transform applied to the image array.
-            target_transform: Optional transform applied to the target dict.
+            bbox_transform: Optional Albumentations-style ``Compose`` called as
+                ``bbox_transform(image=image, bboxes=boxes, labels=labels)`` and
+                returning a dict with the same three keys — see
+                ``src/augmentation.py``. A plain image-only transform is not
+                accepted here since it would desync images from their boxes.
             common_size: (width, height) every image is resized to.
         """
         self.root_dir = root_dir
-        self.transform = transform
-        self.target_transform = target_transform
+        self.bbox_transform = bbox_transform
         self.common_size = common_size
         self.image_files = sorted(glob.glob(os.path.join(root_dir, "images", "*.jpeg")))
 
@@ -52,14 +53,15 @@ class DumpsiteDataset(Dataset):
 
         img_path, txt_path = self._get_image_and_annotation_paths(idx)
         image = Image.open(img_path).convert("RGB")
-        image = np.array(image.resize(self.common_size, resample=Image.BILINEAR)) / 255.0
+        image = np.array(image.resize(self.common_size, resample=Image.BILINEAR)).astype(np.uint8)
 
         boxes, labels = self._load_annotations(txt_path)
-        if self.transform is not None:
-            image = self.transform(image)
-        if self.target_transform is not None:
-            boxes, labels = self.target_transform(boxes, labels)
 
+        if self.bbox_transform is not None:
+            transformed = self.bbox_transform(image=image, bboxes=boxes, labels=labels)
+            image, boxes, labels = transformed["image"], transformed["bboxes"], transformed["labels"]
+
+        image = image.astype(np.float32) / 255.0
         target = {
             "boxes": torch.tensor(boxes, dtype=torch.float32).reshape(-1, 4),
             "labels": torch.tensor(labels, dtype=torch.int64),
