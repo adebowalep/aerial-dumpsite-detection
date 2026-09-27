@@ -14,7 +14,7 @@
 
 This project fine-tunes a torchvision Faster R-CNN (ResNet50-FPN backbone) to detect illegal waste dumpsites in overhead imagery, framed as a binary object-detection task: **dumpsite** vs **no_dumpsite**. It combines two public sources — the [Global Dumpsite Test Data](https://www.scidb.cn/en/s/6bq2M3) (dumpsite images with bounding-box annotations from cities including Colombo, Dhaka, Guwahati, Kinshasa, Lagos, and New Delhi) and [AerialWaste](https://aerialwaste.org/) (used here as the negative/"no_dumpsite" class) — into a single training set, then trains a transfer-learned detector on top of it.
 
-The codebase separates dataset loading, model construction, evaluation metrics, and visualization into their own modules (`src/`), with the end-to-end training and inference workflow driven from a notebook.
+The codebase separates dataset loading, model construction, evaluation metrics, and visualization into their own modules (`src/`). The original exploratory workflow lives in `waste_project.ipynb`; there is now also a config-driven CLI (`train.py` / `infer.py` / `benchmark.py`) for reproducible runs — see [CLI Usage](#cli-usage).
 
 ---
 
@@ -82,21 +82,30 @@ Global Dumpsite Test Data  +  AerialWaste (negatives)
 waste-project/
 ├── src/
 │   ├── data.py           # DumpsiteDataset: loading, resizing, annotation parsing, collate_fn
-│   ├── model.py           # Model factories (Faster R-CNN variants) + train/validate batch fns
+│   ├── model.py           # Model factories (Faster R-CNN, RetinaNet, FCOS) + train/validate batch fns
 │   ├── metric.py           # IoU, precision/recall, AP, mAP implementations
+│   ├── augmentation.py    # Bbox-aware Albumentations train/eval transforms
+│   ├── config.py          # YAML-backed TrainConfig + CLI-override loading
 │   └── visualize.py       # Bounding-box drawing, class-distribution plots, output decoding
+├── train.py               # CLI training entry point (see CLI Usage)
+├── infer.py               # CLI inference entry point
+├── benchmark.py           # Cross-model accuracy/latency/param-count comparison
+├── configs/
+│   └── default.yaml       # Default hyperparameters, overridable from the CLI
 ├── tests/                 # pytest suite (CPU-only, no pretrained weights needed)
 │   ├── conftest.py
 │   ├── test_data.py
 │   ├── test_metric.py
-│   └── test_model.py
+│   ├── test_model.py
+│   ├── test_config.py
+│   └── test_augmentation.py
 ├── .github/workflows/tests.yml   # Runs pytest on every push/PR
 ├── data/                  # Raw source datasets (gitignored — see Setup)
 ├── processed/             # Preprocessed train/test images + annotations (gitignored)
 │   ├── images/
 │   ├── annotations/
 │   └── test/
-├── waste_project.ipynb    # Main training, evaluation, and inference notebook
+├── waste_project.ipynb    # Original exploratory training/evaluation notebook
 ├── generate_data.ipynb    # Dataset preprocessing / generation notebook
 ├── requirements.txt
 ├── requirements-dev.txt   # requirements.txt + pytest/pytest-cov
@@ -164,6 +173,30 @@ Run the cells in order: dataset loading → class-distribution check → model i
 
 ---
 
+## CLI Usage
+
+Hyperparameters used to live hardcoded in notebook cells; they now live in `configs/default.yaml` and can be overridden per run without editing any file.
+
+```bash
+# Train (writes checkpoints + a copy of the resolved config to outputs/)
+python train.py --config configs/default.yaml
+
+# Override anything from the CLI
+python train.py --config configs/default.yaml --model-name retinanet --epochs 20 --lr 0.001
+
+# Run inference with a trained checkpoint
+python infer.py --checkpoint outputs/resnet50_fpn_best.pth --image path/to/image.jpeg
+
+# Compare trained checkpoints across architectures: AP@0.5, latency, param count
+python benchmark.py --checkpoint-dir outputs --models resnet50_fpn retinanet fcos mobilenet_v3
+```
+
+`--model-name` accepts anything in `src.model.MODEL_REGISTRY`: `resnet50_fpn`, `resnet50_fpn_v2`, `mobilenet_v3`, `retinanet`, `fcos` (RetinaNet and FCOS are anchor-based/anchor-free single-stage alternatives to the two-stage Faster R-CNN variants — see [Roadmap](#roadmap)). Training uses bbox-aware Albumentations augmentation (flips, color jitter, mild scale jitter) by default; disable with `--no-augmentation`.
+
+All three scripts were smoke-tested end-to-end in this repo against a tiny synthetic dataset (not committed) to verify the training/inference/benchmark plumbing itself is correct — they have **not** been run against the real dataset, which needs a GPU. Do that first on your training workspace before trusting any numbers out of them.
+
+---
+
 ## How to Test
 
 ```bash
@@ -206,10 +239,11 @@ Both backup folders are gitignored (they live under `processed/`) — delete the
 ## Roadmap
 
 - [x] Add `pytest` unit tests for `src/metric.py`, `src/data.py`, and the `src/model.py` orchestration logic.
-- [ ] Re-run training end-to-end (on a GPU workspace) against the corrected data and report actual precision/recall/AP@0.5 numbers on held-out data.
-- [ ] Add a CLI training/inference entry point and a config file (hyperparameters currently hardcoded in the notebook).
-- [ ] Benchmark Faster R-CNN against modern detectors (RetinaNet, YOLOv8/v11, RT-DETR) on the same split — accuracy, latency, and parameter count.
-- [ ] Add bbox-aware data augmentation (flips, color jitter, scale) via Albumentations.
+- [x] Add a CLI training/inference entry point and a config file (`train.py`, `infer.py`, `configs/default.yaml`) instead of hardcoded notebook hyperparameters.
+- [x] Add bbox-aware data augmentation (flips, color jitter, scale) via Albumentations (`src/augmentation.py`).
+- [x] Add RetinaNet and FCOS (anchor-based/anchor-free single-stage) alongside the Faster R-CNN variants, plus a `benchmark.py` harness for accuracy/latency/param-count comparison — **not yet run against real trained checkpoints**, see [CLI Usage](#cli-usage).
+- [ ] Re-run training end-to-end (on a GPU workspace) against the corrected data and report actual precision/recall/AP@0.5 numbers on held-out data for each model.
+- [ ] Extend the benchmark to YOLOv8/v11 and RT-DETR (via `ultralytics`) — a separate training path from the torchvision models above.
 - [ ] Export the best small model to ONNX/TFLite and benchmark edge/CPU inference latency.
 - [ ] Ship a small FastAPI + Gradio/Streamlit demo for uploading an image and viewing detections.
 - [ ] Explore a remote-sensing foundation-model baseline (e.g., self-supervised pretraining) given the limited labeled data.
