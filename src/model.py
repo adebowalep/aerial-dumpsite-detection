@@ -13,6 +13,8 @@ import torchvision
 from torchvision.models.detection import FasterRCNN
 from torchvision.models.detection.backbone_utils import resnet_fpn_backbone
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+from torchvision.models.detection.fcos import FCOSClassificationHead
+from torchvision.models.detection.retinanet import RetinaNetClassificationHead
 
 # torchvision emits a benign UserWarning about internal API usage on some versions.
 warnings.filterwarnings("ignore", category=UserWarning, module="torchvision.models._utils")
@@ -52,11 +54,32 @@ def get_mobilenet_v3() -> FasterRCNN:
     return _with_two_class_head(model)
 
 
+def get_retinanet():
+    """RetinaNet (ResNet50-FPN): anchor-based single-stage detector, for
+    comparison against the two-stage Faster R-CNN family above."""
+    model = torchvision.models.detection.retinanet_resnet50_fpn(pretrained=True)
+    in_channels = model.head.classification_head.conv[0].in_channels
+    num_anchors = model.head.classification_head.num_anchors
+    model.head.classification_head = RetinaNetClassificationHead(in_channels, num_anchors, NUM_CLASSES)
+    return model
+
+
+def get_fcos():
+    """FCOS (ResNet50-FPN): anchor-free single-stage detector."""
+    model = torchvision.models.detection.fcos_resnet50_fpn(pretrained=True)
+    in_channels = model.head.classification_head.conv[0].in_channels
+    num_anchors = model.head.classification_head.num_anchors
+    model.head.classification_head = FCOSClassificationHead(in_channels, num_anchors, NUM_CLASSES)
+    return model
+
+
 MODEL_REGISTRY = {
     "resnet50_scratch_head": get_model,
     "resnet50_fpn": get_resnet50,
     "resnet50_fpn_v2": get_resnet50_fpn_v2,
     "mobilenet_v3": get_mobilenet_v3,
+    "retinanet": get_retinanet,
+    "fcos": get_fcos,
 }
 
 

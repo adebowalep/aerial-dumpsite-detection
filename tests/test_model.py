@@ -19,6 +19,8 @@ def test_model_registry_has_expected_variants():
         "resnet50_fpn",
         "resnet50_fpn_v2",
         "mobilenet_v3",
+        "retinanet",
+        "fcos",
     }
 
 
