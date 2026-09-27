@@ -14,3 +14,7 @@ pyyaml
 albumentations
 onnx
 onnxruntime
+fastapi
+uvicorn
+python-multipart
+gradio
