@@ -90,15 +90,21 @@ waste-project/
 ├── train.py               # CLI training entry point (see CLI Usage)
 ├── infer.py               # CLI inference entry point
 ├── benchmark.py           # Cross-model accuracy/latency/param-count comparison
+├── export_onnx.py         # ONNX export + CPU latency benchmark
+├── app/
+│   └── main.py            # FastAPI service + Gradio UI (see Demo App)
 ├── configs/
 │   └── default.yaml       # Default hyperparameters, overridable from the CLI
+├── docs/
+│   └── foundation_models.md   # Remote-sensing foundation-model exploration plan
 ├── tests/                 # pytest suite (CPU-only, no pretrained weights needed)
 │   ├── conftest.py
 │   ├── test_data.py
 │   ├── test_metric.py
 │   ├── test_model.py
 │   ├── test_config.py
-│   └── test_augmentation.py
+│   ├── test_augmentation.py
+│   └── test_app.py
 ├── .github/workflows/tests.yml   # Runs pytest on every push/PR
 ├── data/                  # Raw source datasets (gitignored — see Setup)
 ├── processed/             # Preprocessed train/test images + annotations (gitignored)
@@ -197,6 +203,33 @@ All three scripts were smoke-tested end-to-end in this repo against a tiny synth
 
 ---
 
+## Edge Export (ONNX)
+
+```bash
+python export_onnx.py --checkpoint outputs/mobilenet_v3_best.pth --model-name mobilenet_v3 \
+    --output outputs/mobilenet_v3.onnx --image-size 1024
+```
+
+torchvision's Faster R-CNN/RetinaNet/FCOS models export to ONNX directly (opset ≥ 11 handles their internal anchor-generation/NMS ops) — verified working end-to-end in this repo: exported a trained checkpoint and ran it through `onnxruntime`'s CPU execution provider, latency printed automatically after export. **TFLite is not implemented** — converting a detection model with in-graph NMS through onnx → tf → tflite is a substantial separate effort (see [Roadmap](#roadmap)); ONNX Runtime already covers most CPU/edge deployment targets on its own.
+
+---
+
+## Demo App (FastAPI + Gradio)
+
+```bash
+CHECKPOINT_PATH=outputs/resnet50_fpn_best.pth MODEL_NAME=resnet50_fpn \
+    uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+- **`GET /health`** — readiness check.
+- **`POST /predict`** — upload an image, get back JSON detections (`{box, score, label}`), with an optional `score_threshold` query param.
+- **`GET /demo`** — a Gradio upload UI (image in, annotated image + text summary out), mounted directly on the FastAPI app.
+
+The model checkpoint is loaded lazily on first request, so the app starts and serves `/health` even before a checkpoint exists. Smoke-tested end-to-end (including a real bug this caught: `score_threshold or SCORE_THRESHOLD` silently discarded an explicit `0.0` threshold since `0.0` is falsy in Python — fixed, and pinned with a regression test in `tests/test_app.py`).
+
+---
+---
+
 ## How to Test
 
 ```bash
@@ -242,8 +275,11 @@ Both backup folders are gitignored (they live under `processed/`) — delete the
 - [x] Add a CLI training/inference entry point and a config file (`train.py`, `infer.py`, `configs/default.yaml`) instead of hardcoded notebook hyperparameters.
 - [x] Add bbox-aware data augmentation (flips, color jitter, scale) via Albumentations (`src/augmentation.py`).
 - [x] Add RetinaNet and FCOS (anchor-based/anchor-free single-stage) alongside the Faster R-CNN variants, plus a `benchmark.py` harness for accuracy/latency/param-count comparison — **not yet run against real trained checkpoints**, see [CLI Usage](#cli-usage).
-- [ ] Re-run training end-to-end (on a GPU workspace) against the corrected data and report actual precision/recall/AP@0.5 numbers on held-out data for each model.
+- [x] Export the best small model to ONNX and benchmark CPU inference latency (`export_onnx.py`) — TFLite deliberately deferred, see below.
+- [x] Ship a small FastAPI + Gradio demo for uploading an image and viewing detections (`app/main.py`).
+- [x] Write up a remote-sensing foundation-model exploration plan (`docs/foundation_models.md`) — analysis and a runnable feature-extraction stub, not yet executed.
+- [ ] **Re-run training end-to-end (on a GPU workspace) against the corrected data and report actual precision/recall/AP@0.5 numbers on held-out data for each model — nothing above has real numbers yet.**
 - [ ] Extend the benchmark to YOLOv8/v11 and RT-DETR (via `ultralytics`) — a separate training path from the torchvision models above.
-- [ ] Export the best small model to ONNX/TFLite and benchmark edge/CPU inference latency.
-- [ ] Ship a small FastAPI + Gradio/Streamlit demo for uploading an image and viewing detections.
-- [ ] Explore a remote-sensing foundation-model baseline (e.g., self-supervised pretraining) given the limited labeled data.
+- [ ] Convert the ONNX export to TFLite for mobile/embedded targets (in-graph NMS makes onnx → tf → tflite non-trivial for detection models — treat as its own effort).
+- [ ] Execute the foundation-model experiment plan in `docs/foundation_models.md` and report label-efficiency results.
+- [ ] Containerize the demo app (Dockerfile) and deploy it somewhere reachable by a URL (HuggingFace Spaces, Render, Fly.io).
