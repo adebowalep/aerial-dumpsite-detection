@@ -1,0 +1,46 @@
+{
+  "imagenet_resnet50": [
+    {
+      "train_fraction": 0.1,
+      "num_train_samples": 21,
+      "test_accuracy": 0.8111111111111111
+    },
+    {
+      "train_fraction": 0.25,
+      "num_train_samples": 52,
+      "test_accuracy": 0.9111111111111111
+    },
+    {
+      "train_fraction": 0.5,
+      "num_train_samples": 105,
+      "test_accuracy": 0.9555555555555556
+    },
+    {
+      "train_fraction": 1.0,
+      "num_train_samples": 210,
+      "test_accuracy": 0.9666666666666667
+    }
+  ],
+  "dinov2_small": [
+    {
+      "train_fraction": 0.1,
+      "num_train_samples": 21,
+      "test_accuracy": 0.8555555555555555
+    },
+    {
+      "train_fraction": 0.25,
+      "num_train_samples": 52,
+      "test_accuracy": 0.9555555555555556
+    },
+    {
+      "train_fraction": 0.5,
+      "num_train_samples": 105,
+      "test_accuracy": 0.9444444444444444
+    },
+    {
+      "train_fraction": 1.0,
+      "num_train_samples": 210,
+      "test_accuracy": 0.9777777777777777
+    }
+  ]
+}
