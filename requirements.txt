@@ -18,3 +18,6 @@ fastapi
 uvicorn
 python-multipart
 gradio
+ultralytics
+transformers<4.50   # 5.x requires torch>=2.5; this repo has been run and tested against torch 2.2.2
+scikit-learn

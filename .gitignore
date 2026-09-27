@@ -23,8 +23,11 @@ env/
 ## Data & model artifacts (tracked separately / via releases, not git)
 data/
 processed/
+outputs/
+yolo_data/
 *.pth
 *.pt
+*.part
 *.onnx
 *.zip
 
