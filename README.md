@@ -86,17 +86,22 @@ waste-project/
 │   ├── metric.py           # IoU, precision/recall, AP, mAP implementations
 │   ├── augmentation.py    # Bbox-aware Albumentations train/eval transforms
 │   ├── config.py          # YAML-backed TrainConfig + CLI-override loading
+│   ├── yolo_format.py     # Convert processed/ into ultralytics' YOLO format
 │   └── visualize.py       # Bounding-box drawing, class-distribution plots, output decoding
 ├── train.py               # CLI training entry point (see CLI Usage)
 ├── infer.py               # CLI inference entry point
-├── benchmark.py           # Cross-model accuracy/latency/param-count comparison
+├── benchmark.py           # Cross-model accuracy/latency/param-count comparison (torchvision models)
+├── train_yolo.py          # YOLOv8/v11/RT-DETR training via ultralytics (separate path)
+├── benchmark_ultralytics.py   # Same comparison, for ultralytics checkpoints
 ├── export_onnx.py         # ONNX export + CPU latency benchmark
 ├── app/
 │   └── main.py            # FastAPI service + Gradio UI (see Demo App)
 ├── configs/
 │   └── default.yaml       # Default hyperparameters, overridable from the CLI
 ├── docs/
-│   └── foundation_models.md   # Remote-sensing foundation-model exploration plan
+│   └── foundation_models.md   # Remote-sensing foundation-model exploration plan + real step-1 results
+├── scripts/
+│   └── foundation_model_experiment.py   # DINOv2 vs. ImageNet-ResNet50 label-efficiency probe
 ├── tests/                 # pytest suite (CPU-only, no pretrained weights needed)
 │   ├── conftest.py
 │   ├── test_data.py
@@ -104,7 +109,9 @@ waste-project/
 │   ├── test_model.py
 │   ├── test_config.py
 │   ├── test_augmentation.py
-│   └── test_app.py
+│   ├── test_app.py
+│   ├── test_yolo_format.py
+│   └── test_foundation_model_experiment.py
 ├── .github/workflows/tests.yml   # Runs pytest on every push/PR
 ├── data/                  # Raw source datasets (gitignored — see Setup)
 ├── processed/             # Preprocessed train/test images + annotations (gitignored)
@@ -203,6 +210,24 @@ All three scripts were smoke-tested end-to-end in this repo against a tiny synth
 
 ---
 
+## YOLOv8/v11 & RT-DETR (via ultralytics)
+
+A separate training path from `train.py`, since `ultralytics` owns its own full train/val/loss loop and data format rather than plugging into `src/model.py`'s torchvision-based training loop.
+
+```bash
+# Converts processed/ into YOLO format under yolo_data/ the first time, then trains
+python train_yolo.py --data-root processed --model yolov8n.pt --epochs 50
+python train_yolo.py --data-root processed --model yolo11n.pt --epochs 50 --skip-conversion
+python train_yolo.py --data-root processed --model rtdetr-l.pt --epochs 50 --skip-conversion
+
+# Compare against each other and (separately) against benchmark.py's results
+python benchmark_ultralytics.py --checkpoints outputs/yolo/yolov8n/weights/best.pt outputs/yolo/rtdetr-l/weights/best.pt
+```
+
+`src/yolo_format.py` converts this project's `images/` + `annotations/` layout into YOLO's normalized-bbox format, correctly writing an **empty** label file for true negatives (not a fake full-image box — the same fix applied to the torchvision data pipeline). Verified end-to-end in this repo: converted the synthetic mini dataset, ran one real YOLOv8n training epoch (loss decreased, checkpoint saved) and confirmed RT-DETR loads via the identical `ultralytics` API — real plumbing, not just written-and-assumed-to-work. Not run against the real dataset or for enough epochs to produce a meaningful accuracy number; that's for the GPU workspace.
+
+---
+
 ## Edge Export (ONNX)
 
 ```bash
@@ -228,6 +253,17 @@ CHECKPOINT_PATH=outputs/resnet50_fpn_best.pth MODEL_NAME=resnet50_fpn \
 The model checkpoint is loaded lazily on first request, so the app starts and serves `/health` even before a checkpoint exists. Smoke-tested end-to-end (including a real bug this caught: `score_threshold or SCORE_THRESHOLD` silently discarded an explicit `0.0` threshold since `0.0` is falsy in Python — fixed, and pinned with a regression test in `tests/test_app.py`).
 
 ---
+
+## Foundation-Model Experiment
+
+`docs/foundation_models.md` lays out the reasoning and a staged plan; step 1 (a cheap go/no-go check, not full detection) has actually been run on a real 300-image subset of `processed/`:
+
+```bash
+python scripts/foundation_model_experiment.py --num-images 300
+```
+
+DINOv2-small (frozen) features beat ImageNet-ResNet50 features on a whole-image dumpsite/no_dumpsite linear probe at 3 of 4 training-set sizes, most clearly in the low-label regime (10%: 0.856 vs 0.811, 25%: 0.956 vs 0.911) — a real, if preliminary and single-seed, signal in favor of trying a foundation-model backbone for the actual detector. Full table and caveats in the doc. This also surfaced a genuine data-quality finding: 10 of 3,395 `dumpsite_*.jpeg` files have an empty annotation file, which the experiment script now correctly treats as a negative (trusting annotation content over filename).
+
 ---
 
 ## How to Test
@@ -277,9 +313,9 @@ Both backup folders are gitignored (they live under `processed/`) — delete the
 - [x] Add RetinaNet and FCOS (anchor-based/anchor-free single-stage) alongside the Faster R-CNN variants, plus a `benchmark.py` harness for accuracy/latency/param-count comparison — **not yet run against real trained checkpoints**, see [CLI Usage](#cli-usage).
 - [x] Export the best small model to ONNX and benchmark CPU inference latency (`export_onnx.py`) — TFLite deliberately deferred, see below.
 - [x] Ship a small FastAPI + Gradio demo for uploading an image and viewing detections (`app/main.py`).
-- [x] Write up a remote-sensing foundation-model exploration plan (`docs/foundation_models.md`) — analysis and a runnable feature-extraction stub, not yet executed.
-- [ ] **Re-run training end-to-end (on a GPU workspace) against the corrected data and report actual precision/recall/AP@0.5 numbers on held-out data for each model — nothing above has real numbers yet.**
-- [ ] Extend the benchmark to YOLOv8/v11 and RT-DETR (via `ultralytics`) — a separate training path from the torchvision models above.
-- [ ] Convert the ONNX export to TFLite for mobile/embedded targets (in-graph NMS makes onnx → tf → tflite non-trivial for detection models — treat as its own effort).
-- [ ] Execute the foundation-model experiment plan in `docs/foundation_models.md` and report label-efficiency results.
+- [x] Extend the benchmark to YOLOv8/v11 and RT-DETR (via `ultralytics`) — `train_yolo.py` + `benchmark_ultralytics.py`, a separate training path from the torchvision models above. Plumbing verified (real 1-epoch YOLOv8n training run, RT-DETR load check); **no real accuracy numbers yet**.
+- [x] Execute step 1 of the foundation-model experiment plan (`docs/foundation_models.md`) and report label-efficiency results — real run on 300 real images, DINOv2 leads ImageNet-ResNet50 especially in the low-label regime. Step 2 (full detection integration) still open.
+- [ ] **Re-run training end-to-end (on a GPU workspace) against the corrected data and report actual precision/recall/AP@0.5 numbers on held-out data for each model — nothing above has real detection accuracy numbers yet.**
+- [ ] Convert the ONNX export to TFLite for mobile/embedded targets (in-graph NMS makes onnx → tf → tflite non-trivial for detection models — treat as its own effort, deferred until a real trained checkpoint exists to convert).
+- [ ] Step 2 of the foundation-model plan: wrap a DINOv2 (or remote-sensing-specific) backbone into a torchvision-compatible detector and re-run `benchmark.py` against it.
 - [ ] Containerize the demo app (Dockerfile) and deploy it somewhere reachable by a URL (HuggingFace Spaces, Render, Fly.io).
